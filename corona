@@ -1,0 +1,435 @@
+#!/bin/bash 
+
+export POSIXLY_CORRECT=yes
+
+function print_help()
+{
+    echo "Usage: corona [-h] [FILTERS] [COMMAND] [LOG [LOG2 [...]]]"
+    echo "                                                              "
+    echo "-h: prints the help chart"
+    echo "                                                              "
+    echo "FILTERS: (can be combined, every filter to be used only once)"
+    echo "  -a DATETIME:    after - logs after set date (inc. set date) (format: YYYY-MM-DD)"
+    echo "  -b DATETIME:    before - logs before set date (inc. set date) (format: YYYY-MM-DD)"
+    echo "  -g GENDER:      logs with set gender (format: M for male, F for female)"
+    echo "  -s [WIDTH]:     shows data via a graph instead of numeric representation in the following commands:"
+    echo "      gender, age, daily, monthly, yearly, countries, districts, regions"
+    echo "      [WIDTH] sets the width of the histograms, must be a positive whole number"
+    echo "      if [WIDTH] is not set, preset values will be used"
+    echo "                                                              "
+    echo "COMMANDS: (only one to be used)"
+    echo "  infected:       returns the number of infected persons"
+    echo "  merge:          merges log files into a single file while retaining the original order"
+    echo "  gender:         returns the number of infected persons for each gender"
+    echo "  age:            returns a statistic of the infected based on age"
+    echo "  daily:          returns a statistic of the infected for each day"
+    echo "  monthly:        returns a statistic of the infected for each month"
+    echo "  yearly:         returns a statistic of the infected for each year"
+    echo "  countries:      returns a statistic of the infected for each country excluding Czechia"
+    echo "  districts:      returns a statistic of the infected for each district"
+    echo "  regions:        returns a statistic of the infected for each region"
+    echo "                                                              "
+    echo "[LOG[LOG2[...]]]: input log file/files"
+    echo "  files can be compressed via gzip or bzip2"
+    echo "  if no files are included, the program expects a standard input"
+}
+
+function date_validation() 
+{
+    #splits date into year, month and day
+    IFS="-" read -r d_year d_month d_day <<< "$f_date"
+    #checks for correct date format (numbers only, YYYY MM DD)
+    if [[ "$d_year" =~ [^0-9] ]] || [[ "$d_month" =~ [^0-9] ]] || [[ "$d_day" =~ [^0-9] ]] || [[ ${#d_year} -ne 4 ]] || [[ ${#d_month} -ne 2 ]] || [[ ${#d_day} -ne 2 ]]; then
+        echo "Invalid date: $id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report"
+        log_pass=false            
+    fi
+
+    #leap year control
+
+    if [[ $((d_year % 4)) -eq 0 ]] ; then
+        leap_year=true
+        if [[ $((d_year % 100)) -eq 0 ]] && [[ $((d_year % 400)) -eq 0 ]] ; then
+            leap_year=true
+        elif [[ $((d_year % 100)) -eq 0 ]] && [[ $((d_year % 400)) -ne 0 ]] ; then
+            leap_year=false
+        fi
+    else leap_year=false
+    fi
+
+    # 10# ---> prevents from converting to Base 8 and throwing "Value too great for base (error token is "08/09")" errors
+    case "$d_month" in 
+    01|03|05|07|08|10|12)    if [[ "10#$d_day" -lt 1 ]] || [[ "10#$d_day" -gt 31 ]] ; then
+                            echo "Invalid date: $id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report"
+                            log_pass=false  
+                        fi ;;
+    
+    04|06|09|11)           if [[ "10#$d_day" -lt 1 ]] || [[ "10#$d_day" -gt 30 ]] ; then
+                            echo "Invalid date: $id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report"
+                            log_pass=false  
+                        fi ;; 
+
+    02)                  if [[ "$leap_year" = true ]] ; then
+                            if [[ "10#$d_day" -lt 1 ]] || [[ "10#$d_day" -gt 29 ]] ; then
+                                echo "Invalid date: $id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report"
+                                log_pass=false  
+                            fi 
+                        else 
+                            if [[ "10#$d_day" -lt 1 ]] || [[ "10#$d_day" -gt 28 ]] ; then
+                                echo "Invalid date: $id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report"
+                                log_pass=false  
+                            fi 
+                        fi ;;
+    
+    *)                  echo "Invalid date: $id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report"
+                        log_pass=false ;;  
+    esac                         
+}
+
+#reads, filters logs and executes commands from file
+function input_read()
+{   
+    if [[ "$id" != "" ]] ; then
+        
+        #filtering logs    
+        log_pass=true
+        
+        date_validation
+
+        if [[ "$filter_after" = true ]] && [[ "$log_pass" = true ]] ; then
+            if [[ "$a_date_limit" < "$f_date" ]] || [[ "$f_date" = "$a_date_limit" ]]  ; then
+                log_pass=true
+            else log_pass=false
+            fi
+        fi
+
+        if [[ "$filter_before" = true ]] && [[ "$log_pass" = true ]] ; then 
+            if [[ "$f_date" < "$b_date_limit" ]] || [[ "$f_date" = "$b_date_limit" ]]; then
+                log_pass=true
+            else log_pass=false
+            fi
+        fi
+
+        if [[ "$filter_gender" = true ]] && [[ "$log_pass" = true ]] ; then
+            if [ "$f_gender" = "$gender" ] ; then
+                log_pass=true
+            else log_pass=false
+            fi
+        fi
+
+        #proceeds to commands/output if log passed argument filters
+        if [ $log_pass = true ] ; then  
+            case "$command" in
+                infected) ((infected_count+=1)) ;;
+                
+                merge | "") echo "$id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report" ;;
+                
+                gender)     if [ "$f_gender" != "" ] ; then
+                                key=$f_gender
+                                ((log_arr[$key]+=1)) 
+                            else ((none_gender+=1))
+                            fi ;;
+
+                age)        if [ "$f_age" != "" ] ; then   
+                                case "$f_age" in 
+                                    [0-5])                      ((age_arr[0]+=1)) ;;
+                                    [6-9] | 1[0-5])             ((age_arr[1]+=1)) ;;                                                    
+                                    1[6-9] | 2[0-5])            ((age_arr[2]+=1)) ;;
+                                    2[6-9] | 3[0-5])            ((age_arr[3]+=1)) ;;
+                                    3[6-9] | 4[0-5])            ((age_arr[4]+=1)) ;;
+                                    4[6-9] | 5[0-5])            ((age_arr[5]+=1)) ;;
+                                    5[6-9] | 6[0-5])            ((age_arr[6]+=1)) ;;
+                                    6[6-9] | 7[0-5])            ((age_arr[7]+=1)) ;;
+                                    7[6-9] | 8[0-5])            ((age_arr[8]+=1)) ;;
+                                    8[6-9] | 9[0-5])            ((age_arr[9]+=1)) ;;
+                                    9[6-9] | 10[0-5])           ((age_arr[10]+=1)) ;;
+                                    10[6-9] | [1-9][1-9][0-9])  ((age_arr[11]+=1)) ;;
+                                    ?) 1>&2 echo "Invalid age: $id,$f_date,$f_age,$f_gender,$nuts_code,$lau_code,$abroad,$csu_code,$khs_report" ;;
+                                esac
+                            else ((none_age+=1))
+                            fi ;;
+                
+                daily)      key=$f_date 
+                            ((log_arr[$key]+=1)) ;;
+                
+                monthly)    key=$(date -d "$f_date" '+%Y-%m')
+                            ((log_arr[$key]+=1)) ;;
+            
+                yearly)     key=$(date -d "$f_date" '+%Y') 
+                            ((log_arr[$key]+=1)) ;;
+                
+                countries)  if [ "$abroad" = 1 ] ; then
+                                key=$csu_code
+                                ((log_arr[$key]+=1)) 
+                            fi ;;
+                
+                districts) if [ "$lau_code" != "" ] ; then
+                                key=$lau_code
+                                ((log_arr[$key]+=1)) 
+                            else ((none_district+=1))
+                            fi ;;
+                
+                regions)    if [ "$nuts_code" != "" ] ; then
+                                key=$nuts_code
+                                ((log_arr[$key]+=1))         
+                            else ((none_region+=1))
+                            fi ;;
+            esac
+        fi
+    fi
+}
+
+filter_after=false
+filter_before=false
+filter_gender=false
+filter_histogram=false
+
+
+declare -A log_arr
+max_value_hist=0
+file_read=false
+is_zipped=0
+command=""
+int_test="^[0-9]+$"
+
+
+#arguments check
+while getopts :"ha:b:g:s" opt
+do
+    case "$opt" in
+        h)  print_help
+            exit 0
+            ;;
+        a)  a_date_limit="$OPTARG" 
+            filter_after=true
+            ;;
+        b)  b_date_limit="$OPTARG" 
+            filter_before=true
+            ;;
+        g)  gender="$OPTARG"
+            filter_gender=true
+            if [ "$gender" != "M" ] && [ "$gender" != "Z" ] ; then 
+                >&2 echo "ERROR: Incorrect gender filter used"
+                exit 1
+            fi
+            ;;
+        s)  # optional argument, checks if the next argument begins with a '-' or is a number
+            filter_histogram=true
+            eval width=\${$OPTIND}
+            if [[ ! $width =~ $int_test ]] ||  [ "$width" = "" ] ||  [ -f "$width" ] ; then  
+                width=0
+            else
+                ((OPTIND+=1))
+            fi
+            ;;
+
+        *)  >&2 echo "ERROR: Incorrect input argument"  ;;
+    esac
+done
+shift "$((OPTIND-1))"
+arguments_left="$*"
+
+
+#splits the argument string into a string array
+IFS=' '
+read -a input_array <<< "$arguments_left"
+case "${input_array[0]}" in
+    infected | merge | gender | age | daily | monthly | yearly | countries | districts | regions)    
+        command=${input_array[0]} ;;
+esac
+
+if [ "$command" = "" ] || [ "$command" = "merge" ]; then
+    echo "id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs"
+fi
+
+
+
+
+#reads the array of argument inputs
+for i in "${!input_array[@]}";
+do
+    #if command has been read, script reads from the second input array item onward
+    if ([ "$command" != "" ] && [ "$i" != 0 ]) || [ "$command" = "" ]; then 
+        #checks if the argument is a file or a compressed file
+        if [[ -f "${input_array[i]}" ]] || [[ "${input_array[i]}" =~ \.gz$ ]] || [[ "${input_array[i]}" =~ \.bz2$ ]] ; then     
+            input="${input_array[i]}"
+            file_read=true
+            is_zipped=0
+            line_count=0
+            #checking for zipped file
+            #if the command is "merge" or null, outputs header from the first file only
+            if [[ "${input_array[i]}" =~ \.gz$ ]]  ; then
+                is_zipped=1
+            fi 
+            if [[ "${input_array[i]}" =~ \.bz2$ ]] ; then
+                is_zipped=2
+            fi
+
+            
+            #reading through file
+            
+            case "$is_zipped" in 
+                0)  while IFS="," read -r id f_date f_age f_gender nuts_code lau_code abroad csu_code khs_report
+                    do 
+                        #Ignores header
+                        if [[ $line_count -gt 0 ]]; then
+                            input_read
+                        fi
+                        ((line_count+=1)) 
+                    done <<<$(cat "$input" | awk '{ gsub(/[[:blank:]]/,""); print }' )
+                    ;; 
+
+                1)  while IFS="," read -r id f_date f_age f_gender nuts_code lau_code abroad csu_code khs_report
+                    do 
+                        if [[ $line_count -gt 0 ]]; then
+                            input_read
+                        fi
+                        ((line_count+=1)) 
+                    done <<<$(zcat "$input" | awk '{ gsub(/[[:blank:]]/,""); print }')
+                    ;;
+
+                2)  while IFS="," read -r id f_date f_age f_gender nuts_code lau_code abroad csu_code khs_report
+                    do 
+                        if [[ $line_count -gt 0 ]]; then
+                            input_read
+                        fi
+                        ((line_count+=1)) 
+                    done <<<$(bzcat "$input" | awk '{ gsub(/[[:blank:]]/,""); print }') 
+                    ;;
+            esac
+        else    >&2 echo "ERROR: Multiple commands used"
+                exit 1
+        fi
+    fi
+done
+
+if [ "$file_read" = false ] ; then
+    input=$(</dev/stdin)
+    IFS=","
+    line_count=0
+    while IFS="," read -r id f_date f_age f_gender nuts_code lau_code abroad csu_code khs_report
+    do 
+        #Ignores header
+        if [[ $line_count -gt 0 ]]; then
+            input_read
+        fi
+        ((line_count+=1)) 
+    done <<<"$input"
+fi
+
+
+#prints sorted dates and corresponding numbers
+function dates_output() 
+{
+    #counting unit size for a set width value
+    if [[ "$filter_histogram" = true ]] && [[ "$width" != 0 ]] ; then
+        for i in "${!log_arr[@]}";
+        do
+            if [[ ${log_arr[$i]} -gt $max_value_hist ]] ; then
+                max_value_hist="${log_arr[$i]}"
+            fi
+        done
+        unit_size=$((max_value_hist / width))
+    fi
+    #counting unit size for a width value NOT set
+    if [[ "$filter_histogram" = true ]] && [[ "$width" = 0 ]] ; then
+        case "$command" in 
+            gender | yearly)    unit_size=100000 ;;
+            monthly | regions)  unit_size=10000 ;;
+            districts)          unit_size=1000 ;;
+            daily)              unit_size=500 ;;
+            countries)          unit_size=100 ;;
+        esac
+    fi
+
+    for i in "${!log_arr[@]}";
+    do
+        if [[ "$filter_histogram" = true ]] ; then
+                if [ $unit_size -ne 0 ]; then
+                    print_count=$((${log_arr[$i]} / unit_size))
+                else print_count=0
+                fi
+                j=0
+                echo -n "$i: "
+                while [ $j -lt $print_count ]
+                do
+                    echo -n "#"
+                    ((j+=1))
+                done  
+                echo ""
+
+        else    echo "$i: ${log_arr[$i]}"
+        fi
+        
+    done | sort
+}
+
+#output after reading through all files
+case "$command" in 
+    infected) echo "$infected_count" ;;
+    
+    gender)     dates_output
+                if [[ $none_gender -gt 0 ]] ; then
+                    echo "None: $none_gender" 
+                fi ;;
+    
+    age)        if [[ "$filter_histogram" = true ]] && [[ "$width" != 0 ]] ; then
+                    for i in {0..11};
+                    do
+                        if [[ ${age_arr[$i]} -gt $max_value_hist ]] ; then
+                            max_value_hist="${age_arr[$i]}"
+                        fi
+                    done
+                    unit_size=$((max_value_hist / width))
+                fi
+                if [[ "$filter_histogram" = true ]] && [[ "$width" = 0 ]] ; then
+                    unit_size=10000
+                fi
+
+                for i in {0..11};
+                do
+                    case "$i" in 
+                        0)  echo -n "0-5:    " ;;
+                        1)  echo -n "6-15:   " ;;
+                        2)  echo -n "16-25:  " ;;
+                        3)  echo -n "26-35:  " ;;
+                        4)  echo -n "36-45:  " ;;
+                        5)  echo -n "46-55:  " ;;
+                        6)  echo -n "56-65:  " ;;
+                        7)  echo -n "66-75:  " ;;
+                        8)  echo -n "76-85:  " ;;
+                        9)  echo -n "86-95:  " ;;
+                        10) echo -n "96-105: " ;;
+                        11) echo -n ">105:   " ;;
+                    esac
+
+                    #echo -n "$i: "
+                    if [[ "$filter_histogram" = true ]] ; then
+                        print_count=$((${age_arr[$i]} / unit_size))
+                        j=0
+                        while [ $j -lt $print_count ]
+                        do
+                            echo -n "#"
+                            ((j+=1))
+                        done  
+                    else    echo -n "${age_arr[$i]}"
+                    fi
+                    echo ""
+                done
+
+              if [[ $none_age -gt 0 ]] ; then
+                  echo "None  : $none_age"
+              fi
+              ;;
+
+    daily | monthly | yearly | countries) dates_output ;; 
+
+    districts)  dates_output
+                if [[ $none_district -gt 0 ]] ; then
+                    echo "None: $none_district" 
+                fi ;;
+
+    regions)    dates_output
+                if [[ $none_region -gt 0 ]] ; then
+                    echo "None: $none_region" 
+                fi ;;
+esac
